@@ -1,147 +1,99 @@
 #!/bin/bash
+
+# Exit on any error
 set -e
 
-# Ensure the script is run as root
-if [ "$(id -u)" -ne 0 ]; then
-    echo "This script must be run as root. Exiting."
-    exit 1
-fi
+echo "Starting Samba File Server Setup for Desperado Ehitus OÜ..."
 
-# Variables
-YOURNAME="karle"
-HOSTNAME="fs.${YOURNAME}.infra"
-SMB_PASS="123456"  # Default password for Samba users
+# 1. Set hostname
+sudo hostnamectl set-hostname fs.karle.infra
 
-echo "Setting hostname to ${HOSTNAME}..."
-hostnamectl set-hostname ${HOSTNAME}
-hostnamectl
+# 2. Install Samba
+echo "Installing Samba..."
+sudo zypper --non-interactive install samba
 
-echo "Installing Samba and Expect if not already installed..."
-zypper -n in samba expect
+# 3. Configure firewall
+echo "Configuring firewall..."
+sudo firewall-cmd --add-service=samba --permanent
+sudo firewall-cmd --reload
 
-echo "Enabling and starting Samba services..."
-systemctl enable smb nmb
-systemctl start smb nmb
-
-echo "Adding Samba service to the firewall..."
-firewall-cmd --add-service=samba --permanent
-firewall-cmd --reload
-
-#############################
-# Create Users and Groups
-#############################
-
-# Function to create a user if it does not exist
-create_user() {
-    local username="$1"
-    if id "$username" &>/dev/null; then
-        echo "User $username already exists. Skipping."
-    else
-        echo "Creating user $username..."
-        useradd -m "$username"
-    fi
-}
-
-# Users to create
-for user in tiit karle teet tuut piip kristi; do
-    create_user "$user"
+# 4. Create users
+echo "Creating users..."
+for user in tiit karle teet tuut piip kristi
+do
+    sudo useradd -m $user
+    echo "${user}:Pass123!" | sudo chpasswd
 done
 
-# Function to create a group if it does not exist
-create_group() {
-    local groupname="$1"
-    if getent group "$groupname" > /dev/null; then
-        echo "Group $groupname already exists. Skipping."
-    else
-        echo "Creating group $groupname..."
-        groupadd "$groupname"
-    fi
-}
+# 5. Create groups
+echo "Creating groups..."
+sudo groupadd juhatus
+sudo groupadd tootajad
 
-# Create groups
-create_group juhatus
-create_group tootajad
-
-# Add all users into the 'tootajad' group
-echo "Adding all users to group 'tootajad'..."
-for user in tiit karle teet tuut piip kristi; do
-    usermod -a -G tootajad "$user"
+# 6. Add users to groups
+echo "Adding users to groups..."
+# Add to juhatus (management)
+for user in tiit karle teet
+do
+    sudo usermod -a -G juhatus $user
 done
 
-# Add executives only into the 'juhatus' group (assuming tiit, karle and teet are executives)
-echo "Adding executive users to group 'juhatus'..."
-for user in tiit karle teet; do
-    usermod -a -G juhatus "$user"
+# Add all users to tootajad (workers)
+for user in tiit karle teet tuut piip kristi
+do
+    sudo usermod -a -G tootajad $user
 done
 
-#############################
-# Configure Samba Users
-#############################
-
-# Function to set Samba password using expect
-smb_set_password() {
-    local user="$1"
-    expect <<EOF
-spawn smbpasswd -a $user
-expect "New SMB password:"
-send "$SMB_PASS\r"
-expect "Retype new SMB password:"
-send "$SMB_PASS\r"
-expect eof
-EOF
-}
-
-echo "Adding Samba users and setting passwords..."
-for user in tiit karle teet tuut piip kristi; do
-    smb_set_password "$user"
+# 7. Create Samba users
+echo "Creating Samba users..."
+for user in tiit karle teet tuut piip kristi
+do
+    (echo "Pass123!"; echo "Pass123!") | sudo smbpasswd -a $user
 done
 
-#############################
-# Create Directories and Set Permissions
-#############################
-
+# 8. Create shared directories
 echo "Creating shared directories..."
-mkdir -p /srv/samba/Avalik /srv/samba/Juhatus /srv/samba/Tootajad
+sudo mkdir -p /srv/samba/{Avalik,Juhatus,Tootajad}
 
-echo "Configuring /srv/samba/Avalik (public share)..."
-chown root:users /srv/samba/Avalik
-chmod 777 /srv/samba/Avalik
+# 9. Set permissions
+echo "Setting permissions..."
+sudo chown root:users /srv/samba/Avalik
+sudo chmod 777 /srv/samba/Avalik
 
-echo "Configuring /srv/samba/Juhatus (executives only)..."
-chown root:juhatus /srv/samba/Juhatus
-chmod 770 /srv/samba/Juhatus
+sudo chown root:juhatus /srv/samba/Juhatus
+sudo chmod 770 /srv/samba/Juhatus
 
-echo "Configuring /srv/samba/Tootajad (employees and executives)..."
-chown root:tootajad /srv/samba/Tootajad
-chmod 770 /srv/samba/Tootajad
+sudo chown root:tootajad /srv/samba/Tootajad
+sudo chmod 770 /srv/samba/Tootajad
 
-#############################
-# Configure Samba Shares
-#############################
-
-echo "Backing up existing /etc/samba/smb.conf..."
-cp /etc/samba/smb.conf /etc/samba/smb.conf.bak
-
-echo "Appending share definitions to /etc/samba/smb.conf..."
-cat >> /etc/samba/smb.conf <<EOF
-
+# 10. Configure Samba
+echo "Configuring Samba..."
+cat << EOF | sudo tee -a /etc/samba/smb.conf
 [Avalik]
-   path = /srv/samba/Avalik
-   read only = no
-   browsable = yes
+path = /srv/samba/Avalik
+read only = no
+browsable = yes
 
 [Juhatus]
-   path = /srv/samba/Juhatus
-   valid users = @juhatus
-   read only = no
+path = /srv/samba/Juhatus
+valid users = @juhatus
+read only = no
 
 [Tootajad]
-   path = /srv/samba/Tootajad
-   valid users = @tootajad @juhatus
-   read only = no
+path = /srv/samba/Tootajad
+valid users = @tootajad @juhatus
+read only = no
 EOF
 
-echo "Restarting Samba services..."
-systemctl restart smb nmb
+# 11. Enable and start Samba services
+echo "Starting Samba services..."
+sudo systemctl enable smb nmb
+sudo systemctl start smb nmb
 
-echo "Samba file server setup completed successfully."
+echo "Setup complete! Please test the following:"
+echo "1. Windows network drive mapping: \\\\$(hostname -I | awk '{print $1}')\\"
+echo "2. Test with different user accounts:"
+echo "   - Management user (e.g., karle:Pass123!)"
+echo "   - Regular worker (e.g., piip:Pass123!)"
+echo "3. Verify access permissions for each share"
+
