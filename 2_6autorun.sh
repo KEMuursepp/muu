@@ -3,8 +3,7 @@
 # Function to run commands and check for errors
 run_command() {
     echo "Running: $1"
-    eval "$1"
-    if [ $? -ne 0 ]; then
+    if ! eval "$1"; then
         echo "Error executing: $1"
         exit 1
     fi
